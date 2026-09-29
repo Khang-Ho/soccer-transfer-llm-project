@@ -23,3 +23,6 @@ Thumbs.db
 checkpoints/
 models/
 wandb/
+
+# Data
+data/
