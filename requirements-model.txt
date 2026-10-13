@@ -1,0 +1,2 @@
+# Verified CPU test version; choose the matching CUDA wheel before GPU training.
+torch==2.14.1
