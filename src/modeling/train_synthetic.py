@@ -22,6 +22,24 @@ def read_jsonl(path):
         return [json.loads(line) for line in handle]
 
 
+def select_diagnostics(rows, per_group):
+    """Cover each target field; do not count identical recall prompts four times."""
+    groups = {}
+    seen = set()
+    selected = []
+    for row in rows:
+        identity = (row['mode'], row['prompt'])
+        if identity in seen:
+            continue
+        structure = row['structure'] if row['mode'] == 'context' else 'shared'
+        key = (structure, row['mode'], row['target_field'])
+        if groups.get(key, 0) < per_group:
+            selected.append(row)
+            seen.add(identity)
+            groups[key] = groups.get(key, 0) + 1
+    return selected
+
+
 @torch.no_grad()
 def evaluate_loss(model, examples, batch_size, device):
     previous = model.training
@@ -65,6 +83,18 @@ def main():
                          feedforward_dim=args.width * 4)
     model = RecallTransformer(config).to(args.device)
     rows = {split: read_jsonl(ROOT / f'data/synthetic/{split}.jsonl') for split in ('train','validation')}
+    filtered_train = []
+    for row in rows["train"]:
+        if row["mode"] == "context":
+            filtered_train.append(row)
+    rows["train"] = filtered_train
+    filtered_validation = []
+    for row in rows["validation"]:
+        if row["mode"] == "context":
+            filtered_validation.append(row)
+    rows["validation"] = filtered_validation
+    print("Train:", len(rows["train"]))
+    print("Validation:", len(rows["validation"]))
     examples = {split: [answer_example(r['prompt'], r['answer'], tokenizer, config.context_length) for r in values] for split, values in rows.items()}
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
     args.out.mkdir(parents=True)
@@ -78,7 +108,7 @@ def main():
     # Full loss evaluation is deterministic and token-weighted, separated by task.
     losses = {}
     for split in rows:
-        for mode in ('context', 'recall'):
+        for mode in ('context',):
             subset = [e for e,r in zip(examples[split], rows[split]) if r['mode']==mode]
             losses[f'{split}_{mode}_before'] = evaluate_loss(model, subset, args.batch_size, args.device)
     order, offset = [], 0
@@ -105,30 +135,23 @@ def main():
             if step == 1 or step % 20 == 0 or step == args.steps:
                 print(json.dumps(entry), flush=True)
     for split in rows:
-        for mode in ('context', 'recall'):
+        for mode in ('context',):
             subset = [e for e,r in zip(examples[split],rows[split]) if r['mode']==mode]
             losses[f'{split}_{mode}_after'] = evaluate_loss(model, subset, args.batch_size, args.device)
-    # Deterministic, balanced diagnostic subset; raw outputs remain auditable.
+    # Per-field diagnostic subset; shared recall prompts are counted only once.
     predictions = []
     for split, values in rows.items():
-        groups = {}
-        for row in values:
-            key = row['structure'], row['mode']
-            group = groups.setdefault(key, [])
-            if len(group) < args.eval_per_group:
-                group.append(row)
-        for group in groups.values():
-            for row in group:
-                result = model.generate(tokenizer.encode(row['prompt'], bos=True, strict=True), max_new_tokens=args.max_new_tokens)
-                answer = tokenizer.decode(result['token_ids'])
-                predictions.append({**row, 'split':split, 'prediction':answer,
-                                    'stop_reason':result['stop_reason'],
-                                    'correct':result['stop_reason']=='eos' and answer==row['answer']})
+        for row in select_diagnostics(values, args.eval_per_group):
+            result = model.generate(tokenizer.encode(row['prompt'], bos=True, strict=True), max_new_tokens=args.max_new_tokens)
+            answer = tokenizer.decode(result['token_ids'])
+            predictions.append({**row, 'split':split, 'prediction':answer,
+                                'stop_reason':result['stop_reason'],
+                                'correct':result['stop_reason']=='eos' and answer==row['answer']})
     (args.out/'predictions.jsonl').write_text(''.join(json.dumps(p)+'\n' for p in predictions),encoding='utf-8')
     summary = {'losses':losses, 'diagnostic_exact_match':{
         f'{s}_{m}': {'correct':sum(p['correct'] for p in predictions if p['split']==s and p['mode']==m),
                     'total':sum(1 for p in predictions if p['split']==s and p['mode']==m)}
-        for s in rows for m in ('context','recall')},
+        for s in rows for m in ('context',)},
         'elapsed_seconds':time.perf_counter()-started,
         'limitation':'Tiny diagnostic subset; validation recall involves unseen facts. Loss decrease alone does not establish correct answers or football recall.'}
     (args.out/'summary.json').write_text(json.dumps(summary,indent=2),encoding='utf-8')

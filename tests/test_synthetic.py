@@ -5,7 +5,8 @@ import torch
 
 from src.modeling.input_pipeline import CharacterTokenizer, FIELDS, canonical_query
 from src.modeling.prepare_synthetic import build_records, make_examples, representations
-from src.modeling.train_synthetic import evaluate_loss
+from src.modeling.train_synthetic import evaluate_loss, select_diagnostics
+from src.modeling.diagnose_learning import select_examples
 from src.modeling.training_data import answer_example
 from src.modeling.transformer import ModelConfig, RecallTransformer
 
@@ -51,6 +52,17 @@ class SyntheticTests(unittest.TestCase):
         table = next(csv.DictReader(io.StringIO(forms['tabular'])))
         self.assertEqual(table,{k:str(v) for k,v in record.items()})
         self.assertTrue(all(str(v) in forms['flat'] for v in record.values()))
+
+    def test_diagnostics_cover_fields_and_deduplicate_recall(self):
+        rows = make_examples(build_records(2,set()), self.tokenizer)
+        selected = select_diagnostics(rows,1)
+        self.assertEqual(len(selected),50)  # 4 formats * 10 fields + 10 recall
+        self.assertEqual({r['target_field'] for r in selected},set(FIELDS))
+        self.assertEqual(len({(r['mode'],r['prompt']) for r in selected}),50)
+        tiny = select_examples(rows)
+        self.assertEqual(len(tiny),4)
+        self.assertEqual(len({r['prompt'] for r in tiny}),4)
+        self.assertEqual({r['target_field'] for r in tiny},{'Height (cm)','Transfer Fee'})
 
     def test_validation_does_not_update_weights_or_rng(self):
         torch.manual_seed(42)
