@@ -153,7 +153,7 @@ def main():
                     'total':sum(1 for p in predictions if p['split']==s and p['mode']==m)}
         for s in rows for m in ('context',)},
         'elapsed_seconds':time.perf_counter()-started,
-        'limitation':'Tiny diagnostic subset; validation recall involves unseen facts. Loss decrease alone does not establish correct answers or football recall.'}
+        'limitation':'Context-only synthetic diagnostic. Does not establish query-only recall or differences between data structures.'}
     (args.out/'summary.json').write_text(json.dumps(summary,indent=2),encoding='utf-8')
     torch.save({'model_config':asdict(config), 'state_dict':model.state_dict(),
                 'optimizer_state_dict':optimizer.state_dict(), 'steps':args.steps,
